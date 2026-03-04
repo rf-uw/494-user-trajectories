@@ -1,2 +1,5 @@
 communitynotes_env/
 data/*.tsv
+org-data/
+week6/data/
+week6/user_signals.csv
