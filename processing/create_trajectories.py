@@ -5,7 +5,20 @@ from loguru import logger
 
 logger.add("logs/create_trajectories.log", rotation="10 MB", level="DEBUG", serialize=True)
 
-def enrich_with_intercepts_and_factors(scored_notes: pl.DataFrame) -> pl.DataFrame:
+# Reusable filter expressions for rating aggregations
+_rated_helpful = pl.col("helpfulnessLevel") == "HELPFUL"
+_rated_not_helpful = pl.col("helpfulnessLevel") != "HELPFUL"
+_pos_factor = pl.col("noteFinalFactor") > 0
+_neg_factor = pl.col("noteFinalFactor") < 0
+_posted_by_dem = pl.col("postAuthorParty") == "democrat"
+_posted_by_rep = pl.col("postAuthorParty") == "republican"
+_note_claims_misinfo = pl.col("classification") == "MISINFORMED_OR_POTENTIALLY_MISLEADING"
+_note_claims_not_misinfo = pl.col("classification") == "NOT_MISLEADING"
+_ever_crh = pl.col("noteEverCrh")
+_never_crh = ~pl.col("noteEverCrh")
+
+
+def _enrich_with_intercepts_and_factors(scored_notes: pl.DataFrame) -> pl.DataFrame:
     I_AND_F_COLUMNS = {
         "CoreModel (v1.1)": ("coreNoteIntercept", "coreNoteFactor1"),
         "ExpansionModel (v1.1)": ("expansionNoteIntercept", "expansionNoteFactor1"),
@@ -63,6 +76,7 @@ def enrich_with_intercepts_and_factors(scored_notes: pl.DataFrame) -> pl.DataFra
     )
     return scored_notes
 
+
 # Calculate calendar-based user month (months since first action) and calendar month
 def _enrich_with_user_and_calendar_month(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(
@@ -76,19 +90,103 @@ def _enrich_with_user_and_calendar_month(df: pl.DataFrame) -> pl.DataFrame:
         calendarMonth=pl.col("_actionDt").dt.strftime("%Y-%m"),
     ).drop("_actionDt", "_firstActionDt")
 
+
+def _enrich_with_scores(
+    notes: pl.DataFrame, ratings: pl.DataFrame, scores: pl.DataFrame
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    notes = notes.join(scores, on="noteId", how="left", coalesce=True, validate="1:1")
+    ratings = ratings.join(scores, on="noteId", how="left", coalesce=True, validate="m:1")
+    logger.info("Enriched notes and ratings with scores and factors")
+    return notes, ratings
+
+
+def _enrich_with_crh(
+    notes: pl.DataFrame, ratings: pl.DataFrame, requests: pl.DataFrame,
+    note_ever_crh: pl.DataFrame, post_ever_crh: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    notes    = notes   .join(note_ever_crh, left_on="noteId", right_on="note_id", how="left", coalesce=True, validate="1:1")
+    ratings  = ratings .join(note_ever_crh, left_on="noteId", right_on="note_id", how="left", coalesce=True, validate="m:1")
+    requests = requests.join(post_ever_crh, on="tweetId", how="left", validate="m:1")
+    logger.info("Enriched notes and ratings with CRH statuses")
+    return notes, ratings, requests
+
+
+def _enrich_with_topics(
+    notes: pl.DataFrame, ratings: pl.DataFrame, topics: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    notes   = notes  .join(topics, on="noteId", how="left", validate="1:1")  # TODO: Get more recent data from soham
+    ratings = ratings.join(topics, on="noteId", how="left", validate="m:1")
+    logger.info("Enriched notes and ratings with topics")
+    # TODO: Topics for note requests?
+    return notes, ratings
+
+
+def _enrich_with_first_action(
+    notes: pl.DataFrame, ratings: pl.DataFrame, requests: pl.DataFrame,
+    first_action: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    notes    = notes   .join(first_action.rename({"participantId": "noteAuthorParticipantId"}),on="noteAuthorParticipantId",   how="left", validate="m:1")
+    ratings  = ratings .join(first_action.rename({"participantId": "raterParticipantId"}),     on="raterParticipantId",        how="left", validate="m:1")
+    requests = requests.join(first_action.rename({"participantId": "requesterParticipantId"}), on="requesterParticipantId",    how="left", validate="m:1")
+    logger.info("Enriched notes and ratings with user join dates")
+    return notes, ratings, requests
+
+
+def _enrich_with_partisanship(
+    notes: pl.DataFrame, ratings: pl.DataFrame, partisanship: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    party_cols = partisanship.select("note_id", "party").rename({"party": "postAuthorParty"})
+    notes   = notes  .join(party_cols, left_on="noteId", right_on="note_id", coalesce=True, how="left", validate="1:1")
+    ratings = ratings.join(party_cols, left_on="noteId", right_on="note_id", coalesce=True, how="left", validate="m:1")
+    # TODO: Partisanship for note requests?
+    logger.info("Enriched notes and ratings with partisanship labels")
+    return notes, ratings
+
+
+def _enrich_ratings_with_note_data(
+    ratings: pl.DataFrame, notes: pl.DataFrame,
+) -> pl.DataFrame:
+    ratings = ratings.join(
+        notes.select("noteId", "noteEverCrh", "noteFinalFactor", "noteFinalIntercept", "topic", "postAuthorParty", "classification"),
+        on="noteId",
+        how="left",
+        validate="m:1"
+    )
+    logger.info("Enriched ratings with note-level data")
+    return ratings
+
+
+def _enrich_requests_with_outcomes(
+    requests: pl.DataFrame, notes: pl.DataFrame,
+) -> pl.DataFrame:
+    request_outcomes = (
+        notes
+        .select("tweetId", "noteEverCrh")
+        .group_by("tweetId")
+        .agg(requestResultedInNote=pl.lit(True), requestResultedInCrh=pl.col("noteEverCrh").any())
+    )
+    requests = requests.join(request_outcomes, on="tweetId", how="left", coalesce=True, validate="m:1")
+    requests = requests.with_columns(
+        requestResultedInNote=pl.col("requestResultedInNote").fill_null(False),
+        requestResultedInCrh =pl.col("requestResultedInCrh") .fill_null(False)
+    )
+    logger.info("Enriched requests with outcomes")
+    return requests
+
+
 if __name__ == "__main__":
-    # Load data 
-    users       = pl.read_parquet("data/2026-02-03/userEnrollment.parquet") 
+    # Load data
+    users       = pl.read_parquet("data/2026-02-03/userEnrollment.parquet")
     notes       = pl.read_parquet("data/2026-02-03/notes.parquet")
     ratings     = pl.read_parquet("data/2026-02-03/noteRatings.parquet")
     requests    = pl.read_parquet("data/2026-01-09/noteRequests.parquet").rename({"userId": "requesterParticipantId"}) # Using the user-level requests, not post-level requests!
     statuses    = pl.read_csv    ("data/2026-02-27-note_status_records.csv")    # Processed statutes, taken from a scm-prep run on 2/27.
-    partisanship= pl.read_csv("data/renault_partisanship_labels.csv") # Partisanship data is from paper: "Republicans are flagged more often than Democrats for sharing misinformation on X’s Community Notes" by Renault et al.
-    scores      = pl.read_parquet("data/2026-02-03-scored_notes.parquet")     
-    scores      = enrich_with_intercepts_and_factors(scores)
+    partisanship= pl.read_csv("data/renault_partisanship_labels.csv") # Partisanship data is from paper: "Republicans are flagged more often than Democrats for sharing misinformation on X's Community Notes" by Renault et al.
+    scores      = pl.read_parquet("data/2026-02-03-scored_notes.parquet")
+    scores      = _enrich_with_intercepts_and_factors(scores)
     topics      = pl.read_parquet("data/from-soham-notes_full.parquet")
     logger.info("Data loaded successfully")
-        
+
     # Enrollment data not in users file; find the date each user made their first action
     first_note_written      = notes     .group_by("noteAuthorParticipantId").agg(createdAtMillis=pl.col("createdAtMillis").min())
     first_note_rated        = ratings   .group_by("raterParticipantId")     .agg(createdAtMillis=pl.col("createdAtMillis").min())
@@ -129,28 +227,11 @@ if __name__ == "__main__":
     logger.info(f"Calculated CRH statuses for {len(note_ever_crh):,} notes")
     logger.info(f"Calculated CRH statuses for {len(post_ever_crh):,} posts")
 
-    # Enrich with scores and factors
-    notes = notes.join(scores, left_on="noteId", right_on="noteId", how="left", coalesce=True, validate="1:1")
-    ratings = ratings.join(scores, left_on="noteId", right_on="noteId", how="left", coalesce=True, validate="m:1")
-    logger.info("Enriched notes and ratings with scores and factors")
-
-    # Enrich with CRH statuses
-    notes    = notes   .join(note_ever_crh, left_on="noteId", right_on="note_id", how="left", coalesce=True, validate="1:1")
-    ratings  = ratings .join(note_ever_crh, left_on="noteId", right_on="note_id", how="left", coalesce=True, validate="m:1")
-    requests = requests.join(post_ever_crh, on="tweetId", how="left", validate="m:1")
-    logger.info("Enriched notes and ratings with CRH statuses")
-
-    # Enrich with topics
-    notes    = notes   .join(topics, on="noteId", how="left", validate="1:1") # TODO: Get more recent data from soham
-    ratings  = ratings .join(topics, on="noteId", how="left", validate="m:1")
-    logger.info("Enriched notes and ratings with topics")
-    # TODO: Topics for note requests? 
-
-    # Enrich with user join dates
-    notes    = notes   .join(first_action.rename({"participantId": "noteAuthorParticipantId"}),on="noteAuthorParticipantId",   how="left", validate="m:1")
-    ratings  = ratings .join(first_action.rename({"participantId": "raterParticipantId"}),     on="raterParticipantId",        how="left", validate="m:1")
-    requests = requests.join(first_action.rename({"participantId": "requesterParticipantId"}), on="requesterParticipantId",    how="left", validate="m:1")
-    logger.info("Enriched notes and ratings with user join dates")
+    # Enrich
+    notes, ratings = _enrich_with_scores(notes, ratings, scores)
+    notes, ratings, requests = _enrich_with_crh(notes, ratings, requests, note_ever_crh, post_ever_crh)
+    notes, ratings = _enrich_with_topics(notes, ratings, topics)
+    notes, ratings, requests = _enrich_with_first_action(notes, ratings, requests, first_action)
 
     notes    = _enrich_with_user_and_calendar_month(notes)
     ratings  = _enrich_with_user_and_calendar_month(ratings)
@@ -160,34 +241,9 @@ if __name__ == "__main__":
     requests = requests  .with_columns(requestDate=pl.from_epoch(pl.col("createdAtMillis"), time_unit="ms").dt.date())
     logger.info("Calculated user months and calendar months")
 
-    # Enrich with Renault partisanship labels
-    notes    = notes     .join(partisanship.select("note_id", "party").rename({"party":"postAuthorParty"}), left_on="noteId", right_on="note_id", coalesce=True, how="left", validate="1:1")
-    ratings  = ratings   .join(partisanship.select("note_id", "party").rename({"party":"postAuthorParty"}), left_on="noteId", right_on="note_id", coalesce=True, how="left", validate="m:1")
-    # TODO: Partisanship for note requests? 
-    logger.info("Enriched notes and ratings with partisanship labels")
-
-    # Enrich ratings with note-level data (e.g. final factor, final intercept, num ratings, CRH status, topic, etc.)
-    ratings = ratings.join(
-        notes.select("noteId", "noteEverCrh", "noteFinalFactor", "noteFinalIntercept", "topic", "postAuthorParty", "classification"),
-        on="noteId",
-        how="left",
-        validate="m:1"
-    )
-    logger.info("Enriched ratings with note-level data")
-
-    # Calculate whether request resulted in note, and if so, whether that note achieved CRH status
-    request_outcomes = (
-        notes
-        .select("tweetId", "noteEverCrh")
-        .group_by("tweetId")
-        .agg(requestResultedInNote=pl.lit(True), requestResultedInCrh=pl.col("noteEverCrh").any())
-    )
-    requests = requests.join(request_outcomes, left_on="tweetId", right_on="tweetId", how="left", coalesce=True, validate="m:1")
-    requests = requests.with_columns(
-        requestResultedInNote=pl.col("requestResultedInNote").fill_null(False),
-        requestResultedInCrh =pl.col("requestResultedInCrh") .fill_null(False)
-    )
-    logger.info("Enriched requests with outcomes")
+    notes, ratings = _enrich_with_partisanship(notes, ratings, partisanship)
+    ratings = _enrich_ratings_with_note_data(ratings, notes)
+    requests = _enrich_requests_with_outcomes(requests, notes)
 
     # Aggregate all users' notes per month
     user_notes = notes.group_by(["noteAuthorParticipantId", "userMonth"]).agg(
@@ -213,42 +269,42 @@ if __name__ == "__main__":
     user_ratings = ratings.group_by(["raterParticipantId", "userMonth"]).agg(
         calendarMonth=pl.col("calendarMonth").first(),
         notesRated=pl.len(),
-        avgHelpfulFactor=pl.col("noteFinalFactor").filter(pl.col("helpfulnessLevel") == "HELPFUL").mean(),
-        avgNotHelpfulFactor=pl.col("noteFinalFactor").filter(pl.col("helpfulnessLevel") != "HELPFUL").mean(),
-        avgHelpfulIntercept=pl.col("noteFinalIntercept").filter(pl.col("helpfulnessLevel") == "HELPFUL").mean(),
-        avgNotHelpfulIntercept=pl.col("noteFinalIntercept").filter(pl.col("helpfulnessLevel") != "HELPFUL").mean(),
-        correctHelpfuls=pl.col("noteEverCrh").filter(pl.col("helpfulnessLevel") == "HELPFUL").sum(),
-        correctNotHelpfuls=(~pl.col("noteEverCrh")).filter(pl.col("helpfulnessLevel") != "HELPFUL").sum(),
+        avgHelpfulFactor=pl.col("noteFinalFactor").filter(_rated_helpful).mean(),
+        avgNotHelpfulFactor=pl.col("noteFinalFactor").filter(_rated_not_helpful).mean(),
+        avgHelpfulIntercept=pl.col("noteFinalIntercept").filter(_rated_helpful).mean(),
+        avgNotHelpfulIntercept=pl.col("noteFinalIntercept").filter(_rated_not_helpful).mean(),
+        correctHelpfuls=_ever_crh.filter(_rated_helpful).sum(),
+        correctNotHelpfuls=_never_crh.filter(_rated_not_helpful).sum(),
 
         # Counts by factor sign x helpfulness
-        posFactorRatedHelpful=((pl.col("noteFinalFactor") > 0) & (pl.col("helpfulnessLevel") == "HELPFUL")).sum(),
-        posFactorRatedNotHelpful=((pl.col("noteFinalFactor") > 0) & (pl.col("helpfulnessLevel") != "HELPFUL")).sum(),
-        negFactorRatedHelpful=((pl.col("noteFinalFactor") < 0) & (pl.col("helpfulnessLevel") == "HELPFUL")).sum(),
-        negFactorRatedNotHelpful=((pl.col("noteFinalFactor") < 0) & (pl.col("helpfulnessLevel") != "HELPFUL")).sum(),
+        posFactorRatedHelpful=(_pos_factor & _rated_helpful).sum(),
+        posFactorRatedNotHelpful=(_pos_factor & _rated_not_helpful).sum(),
+        negFactorRatedHelpful=(_neg_factor & _rated_helpful).sum(),
+        negFactorRatedNotHelpful=(_neg_factor & _rated_not_helpful).sum(),
 
         # % correct among +/- factor notes rated helpful/not helpful
-        pctCorrectPosFactorHelpful=pl.col("noteEverCrh").filter((pl.col("noteFinalFactor") > 0) & (pl.col("helpfulnessLevel") == "HELPFUL")).mean(),
-        pctCorrectPosFactorNotHelpful=(~pl.col("noteEverCrh")).filter((pl.col("noteFinalFactor") > 0) & (pl.col("helpfulnessLevel") != "HELPFUL")).mean(),
-        pctCorrectNegFactorHelpful=pl.col("noteEverCrh").filter((pl.col("noteFinalFactor") < 0) & (pl.col("helpfulnessLevel") == "HELPFUL")).mean(),
-        pctCorrectNegFactorNotHelpful=(~pl.col("noteEverCrh")).filter((pl.col("noteFinalFactor") < 0) & (pl.col("helpfulnessLevel") != "HELPFUL")).mean(),
+        pctCorrectPosFactorHelpful=_ever_crh.filter(_pos_factor & _rated_helpful).mean(),
+        pctCorrectPosFactorNotHelpful=_never_crh.filter(_pos_factor & _rated_not_helpful).mean(),
+        pctCorrectNegFactorHelpful=_ever_crh.filter(_neg_factor & _rated_helpful).mean(),
+        pctCorrectNegFactorNotHelpful=_never_crh.filter(_neg_factor & _rated_not_helpful).mean(),
 
         # % correct among helpful/not-helpful ratings overall
-        pctHelpfulRatingsCorrect=pl.col("noteEverCrh").filter(pl.col("helpfulnessLevel") == "HELPFUL").mean(),
-        pctNotHelpfulRatingsCorrect=(~pl.col("noteEverCrh")).filter(pl.col("helpfulnessLevel") != "HELPFUL").mean(),
+        pctHelpfulRatingsCorrect=_ever_crh.filter(_rated_helpful).mean(),
+        pctNotHelpfulRatingsCorrect=_never_crh.filter(_rated_not_helpful).mean(),
 
         uniqueDaysRated=pl.col("ratingDate").n_unique(),
         avgPostsRatedPerDay=pl.len() / pl.col("ratingDate").n_unique(),
         uniqueTopicsRated=pl.col("topic").filter(pl.col("topic").is_not_null()).n_unique(),
 
         # Classifications from "Hyperactive Minority Alter the Stability of Community Notes" by Nudo et al.
-        antiDemNNRatings    =((pl.col("postAuthorParty") == "democrat")   & (pl.col("classification") == "MISINFORMED_OR_POTENTIALLY_MISLEADING") & (pl.col("helpfulnessLevel") == "HELPFUL")).sum(),
-        proDemNNRatings     =((pl.col("postAuthorParty") == "democrat")   & (pl.col("classification") == "MISINFORMED_OR_POTENTIALLY_MISLEADING") & (pl.col("helpfulnessLevel") != "HELPFUL")).sum(),
-        proDemNNNRatings    =((pl.col("postAuthorParty") == "democrat")   & (pl.col("classification") == "NOT_MISLEADING")                        & (pl.col("helpfulnessLevel") == "HELPFUL")).sum(),
-        antiDemNNNRatings   =((pl.col("postAuthorParty") == "democrat")   & (pl.col("classification") == "NOT_MISLEADING")                        & (pl.col("helpfulnessLevel") != "HELPFUL")).sum(),
-        antiRepNNRatings    =((pl.col("postAuthorParty") == "republican") & (pl.col("classification") == "MISINFORMED_OR_POTENTIALLY_MISLEADING") & (pl.col("helpfulnessLevel") == "HELPFUL")).sum(),
-        proRepNNRatings     =((pl.col("postAuthorParty") == "republican") & (pl.col("classification") == "MISINFORMED_OR_POTENTIALLY_MISLEADING") & (pl.col("helpfulnessLevel") != "HELPFUL")).sum(),
-        proRepNNNRatings    =((pl.col("postAuthorParty") == "republican") & (pl.col("classification") == "NOT_MISLEADING")                        & (pl.col("helpfulnessLevel") == "HELPFUL")).sum(),
-        antiRepNNNRatings   =((pl.col("postAuthorParty") == "republican") & (pl.col("classification") == "NOT_MISLEADING")                        & (pl.col("helpfulnessLevel") != "HELPFUL")).sum(),
+        antiDemNNRatings    =(_posted_by_dem & _note_claims_misinfo     & _rated_helpful).sum(),
+        proDemNNRatings     =(_posted_by_dem & _note_claims_misinfo     & _rated_not_helpful).sum(),
+        proDemNNNRatings    =(_posted_by_dem & _note_claims_not_misinfo & _rated_helpful).sum(),
+        antiDemNNNRatings   =(_posted_by_dem & _note_claims_not_misinfo & _rated_not_helpful).sum(),
+        antiRepNNRatings    =(_posted_by_rep & _note_claims_misinfo     & _rated_helpful).sum(),
+        proRepNNRatings     =(_posted_by_rep & _note_claims_misinfo     & _rated_not_helpful).sum(),
+        proRepNNNRatings    =(_posted_by_rep & _note_claims_not_misinfo & _rated_helpful).sum(),
+        antiRepNNNRatings   =(_posted_by_rep & _note_claims_not_misinfo & _rated_not_helpful).sum(),
         *[
             pl.col("condensed_topic")
             .filter(pl.col("condensed_topic") == topic)
