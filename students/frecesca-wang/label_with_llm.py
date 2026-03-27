@@ -36,6 +36,7 @@ def _(OpenAI, os):
     client = OpenAI()
     return (client,)
 
+print("Key prefix:", os.environ["OPENAI_API_KEY"][:8])
 
 @app.cell
 def _(pl):

@@ -13,7 +13,12 @@ def _():
         separator="\t"
     )
 
-    df.height
+    df.head()
+    return
+
+
+@app.cell
+def _():
     return
 
 
