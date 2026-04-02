@@ -26,7 +26,6 @@ students/**/__marimo__/
 logs/
 
 # Local datasets
-=======
 students/**/Archive-2/**
 students/**/archive-2/**
 **/*.parquet
