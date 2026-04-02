@@ -1,5 +1,7 @@
 # INFO 494: User Trajectories
 
+**Submissions should be complete by Tuesday at 11:59 PM.**
+
 ## How to Get Started
 
 1. [Fork](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo?tool=webui) this repository
@@ -10,10 +12,10 @@
 
 ## How to Submit a Task
 
-1. Once your code is ready to submit, make a [commit](https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/about-commits)
-2. Make sure you don't commit any data or personal files!
-3. Submit a [pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork). Your pull request should be named "#ISSUE_NUMBER FULL_NAME"
-4. Submit your report for the task on canvas
+1. Once your code is ready to submit, perform a [git pull](https://github.com/git-guides/git-pull) to integrate recent changes from others.
+2. Make a [commit](https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/about-commits)
+3. Make sure you don't commit any data or personal files!
+4. Submit a [pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork). Your pull request should be named "WEEK_NUMBER FULL_NAME"
 
 **Submissions should be complete by Tuesday at 11:59 PM.**
 
