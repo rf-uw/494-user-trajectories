@@ -6,19 +6,27 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
+    from pathlib import Path
+
     import matplotlib.pyplot as plt
     import polars as pl
     import seaborn as sns
 
-    return pl, plt, sns
+    return Path, pl, plt, sns
 
 
 @app.cell
-def _(enrich_with_scores, logger, pl):
+def _(Path):
+    DATA_DIR = Path(".").absolute().parent.parent / "data"
+    return (DATA_DIR,)
+
+
+@app.cell
+def _(DATA_DIR, pl):
     def _enrich_with_scores(
         notes: pl.DataFrame, ratings: pl.DataFrame,
     ) -> tuple[pl.DataFrame, pl.DataFrame]:
-        scores      = pl.read_parquet("data/2026-02-03-scored_notes.parquet")
+        scores      = pl.read_parquet(DATA_DIR / "2026-02-03-scored_notes.parquet")
         I_AND_F_COLUMNS = {
             "CoreModel (v1.1)": ("coreNoteIntercept", "coreNoteFactor1"),
             "ExpansionModel (v1.1)": ("expansionNoteIntercept", "expansionNoteFactor1"),
@@ -77,22 +85,88 @@ def _(enrich_with_scores, logger, pl):
 
         notes = notes.join(scores, on="noteId", how="left", coalesce=True, validate="1:1")
         ratings = ratings.join(scores, on="noteId", how="left", coalesce=True, validate="m:1")
-        logger.info("Enriched notes and ratings with scores and factors")
         return notes, ratings
-    
-    renault = pl.read_csv("data/renault_partisanship_labels.csv", schema_overrides={"note_id": pl.String, "tweet_author_id": pl.String, "tweet_id": pl.String})
-    _raw_notes=pl.read_parquet("data/2026-02-03/notes.parquet")
-    _raw_ratings=pl.read_parquet("data/2026-02-03/noteRatings.parquet")
+
+    renault = pl.read_csv(DATA_DIR / "renault_partisanship_labels.csv", schema_overrides={"note_id": pl.String, "tweet_author_id": pl.String, "tweet_id": pl.String})
+    _raw_notes=pl.read_parquet(DATA_DIR / "2026-02-03/notes.parquet")
+    _raw_ratings=pl.read_parquet(DATA_DIR / "2026-02-03/noteRatings.parquet")
 
 
-    notes=enrich_with_scores(notes=_raw_notes, ratings=_raw_ratings)
+    notes, _ =_enrich_with_scores(notes=_raw_notes, ratings=_raw_ratings)
+    return notes, renault
+
+
+@app.cell
+def _(notes, pl, renault):
+    party_and_factor = (
+        notes
+        .with_columns(createdAtDt=pl.from_epoch(pl.col("createdAtMillis"), time_unit="ms"))
+        .with_columns(noteCreatedMonth=pl.col("createdAtDt").dt.strftime("%Y-%m"))
+        .select("noteId", "noteCreatedMonth", "noteFinalFactor", "classification", "summary")
+        .with_columns(noteId = pl.col("noteId").cast(pl.String))
+        .join(renault.select("note_id","party"), coalesce=True, how="full", left_on="noteId", right_on="note_id")
+    )
+    return (party_and_factor,)
+
+
+@app.cell
+def _(party_and_factor, sns):
+    sns.violinplot(
+        data=party_and_factor.to_pandas(),
+        x="party",
+        hue="classification",
+        y="noteFinalFactor",
+    )
+    return
+
+
+@app.cell
+def _(party_and_factor, pl, sns):
+    sns.boxplot(
+        data=party_and_factor
+            .sort("noteCreatedMonth")
+            .filter(pl.col("party") != "unknown")
+            .to_pandas(),
+        x="noteCreatedMonth",
+        hue="party",
+        y="noteFinalFactor",
+    )
+    return
+
+
+@app.cell
+def _(party_and_factor, pl, plt, sns):
+    _ax = sns.pointplot(
+        data=party_and_factor
+            .sort("noteCreatedMonth")
+            .filter(pl.col("party") != "unknown")
+            .to_pandas(),
+        estimator="median",
+        errorbar=("ci", 95),
+        x="noteCreatedMonth",
+        hue="party",
+        y="noteFinalFactor",
+    )
+
+
+    _ax.tick_params(axis="x", rotation=45)
+    # keep every third month label
+    _ticks = _ax.get_xticks()
+    _labels = _ax.get_xticklabels()
+
+    # _ax.set_xticks(_ticks[::3])
+    # _ax.set_xticklabels([l.get_text() for l in _labels[::3]])
+    plt.setp(_ax.get_xticklabels(), ha="right")
+
+    # move legend outside
+    _ax
     return
 
 
 @app.cell
 def _(pl):
-    writing_traj = pl.read_parquet("data/Archive/sample_user_note_traj.parquet")
-    rating_traj = pl.read_parquet("data/Archive/sample_user_rating_traj.parquet")
+    writing_traj = pl.read_parquet("../../data/Archive/sample_user_note_traj.parquet")
+    rating_traj = pl.read_parquet("../../data/Archive/sample_user_rating_traj.parquet")
     rating_traj = rating_traj.with_columns(
         pl.col([
             "proRepRatings",
@@ -113,7 +187,7 @@ def _(pl):
     ).with_columns(
         avgFactorDiff = pl.col("avgHelpfulFactor") - pl.col("avgNotHelpfulFactor")
     )
-    requesting_traj = pl.read_parquet("data/Archive/sample_user_request_traj.parquet")
+    requesting_traj = pl.read_parquet("../../data/Archive/sample_user_request_traj.parquet")
     return rating_traj, requesting_traj, writing_traj
 
 
