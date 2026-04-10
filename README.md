@@ -1,5 +1,7 @@
 # INFO 494: User Trajectories
 
+**Submissions should be complete by Tuesday at 11:59 PM.**
+
 ## How to Get Started
 
 1. [Fork](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo?tool=webui) this repository
@@ -8,12 +10,18 @@
 4. Create a folder for yourself in the `students` directory
 5. Write code in your directory
 
+## At the Start of the Week
+
+Make a comment on the issue you'll be working on, stating what work you intend to do.
+
 ## How to Submit a Task
 
-1. Once your code is ready to submit, make a [commit](https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/about-commits)
-2. Make sure you don't commit any data or personal files!
-3. Submit a [pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork). Your pull request should be named "#ISSUE_NUMBER FULL_NAME"
-4. Submit your report for the task on canvas
+1. Once your work is ready to submit, perform a [git pull](https://github.com/git-guides/git-pull) to integrate recent changes from others.
+2. If you are submitting writing, your commit should contain a pdf; if you are submitting analysis, your commit should contain code, figures, notebooks, etc.
+3. Make a [commit](https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/about-commits).
+4. Make sure you don't commit any data or personal files!
+5. Submit a [pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork). Your pull request should be named "FULL_NAME"
+6. Tag the issue you were responding to in your PR.
 
 **Submissions should be complete by Tuesday at 11:59 PM.**
 
