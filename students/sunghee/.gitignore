@@ -5,3 +5,4 @@ analysis/data/
 analysis/user_signals.csv
 analysis/data/*.parquet
 analysis/data/database_replication.csv
+sp26/data
