@@ -1,17 +1,41 @@
-# Ignore secrets
-secrets/*
+# Secrets
+**/secrets/
+secrets/
 
 # But okay to include templates
 !secrets/*.template
+!**/secrets/*.template
 
+# Python environments
 venv/
-data/local/notes-00000.tsv
-*/.DS_Store
+__pycache__/
+**/venv/
+**/__pycache__/
+**/uv.lock
+**/pyproject.toml
+**/.python-version
+__marimo__/
+examples/__marimo__/
+students/**/__marimo__/
+
+# OS files
+**/.DS_Store
 .DS_Store
 
-# Ignore local dataset
-dataset 1.29/
+# Logs
+logs/
 
-uv.lock
-pyproject.toml
-.python-version
+# Local datasets
+students/**/Archive-2/**
+students/**/archive-2/**
+**/*.parquet
+**/ratings_with_features.csv
+**/dataset 1.29/
+**/data/local/notes-00000.tsv
+dataset 2.24/
+**/dataset 2.24/
+data/renault_partisanship_labels.csv
+data/2026-02-27-note_status_records.csv
+**/data - 3.17/
+data/Archive.zip
+data/Archive/
