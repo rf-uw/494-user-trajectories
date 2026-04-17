@@ -1,7 +1,7 @@
 import marimo
 
-__generated_with = "0.22.4"
-app = marimo.App(auto_download=["html", "ipynb"])
+__generated_with = "0.23.1"
+app = marimo.App(width="full", auto_download=["html", "ipynb"])
 
 
 @app.cell
@@ -12,8 +12,11 @@ def _():
     import numpy as np
     import plotly.graph_objects as go
     import marimo as mo
+    import plotly.express as px
+    from datetime import date
+    import colorsys
 
-    return Path, go, mo, np, pl, plt
+    return Path, colorsys, go, mo, pl, plt, px
 
 
 @app.cell(hide_code=True)
@@ -26,7 +29,7 @@ def _(mo):
 
 @app.cell
 def _(Path, pl):
-    # Resolve data directory relative to this notebook location
+    # Load data
     archive_dir = Path("../../data")
 
     note_path = archive_dir / "user_note_traj.parquet"
@@ -60,224 +63,493 @@ def _(Path, pl):
             }
         )
     )
+    return notes, ratings, requests
 
-    joined_chronological = (
+
+@app.cell
+def _(apply_rules, month_activity_rules, notes, pl, ratings, requests):
+    user_months = (
         notes.join(
-            ratings,
-            on=["participantId", "userMonth", "calendarMonth"],
-            how="full",
-            coalesce=True,
-        )
+            ratings, how="full", coalesce=True,
+            on=["participantId", "userMonth", "calendarMonth"],)
         .join(
-            requests,
-            on=["participantId", "userMonth", "calendarMonth"],
-            how="full",
-            coalesce=True,
+            requests, how="full", coalesce=True,
+            on=["participantId", "userMonth", "calendarMonth"],)
+        .with_columns(
+            calendarDate=pl.col("calendarMonth").str.strptime(pl.Date, "%Y-%m"),
+            activeMonth=(pl.col("notesWritten").fill_null(0) + pl.col("notesRated").fill_null(0) + pl.col("notesRequested").fill_null(0)) > 0))
+
+
+    # Build a df from users' first observed month to the last possible month
+    _when_users_joined = user_months.group_by("participantId").agg(
+        userFirstCalendarMonth=pl.col("calendarDate").min(),
+        userLastActiveCalendarMonth=pl.col("calendarDate").max())
+
+    calendar_max = user_months.select(pl.col("calendarDate").max()).row(0)[0]
+    calendar_min = user_months.select(pl.col("calendarDate").min()).row(0)[0]
+
+    _all_months = pl.DataFrame({
+            "calendarDate": pl.date_range(
+                start=calendar_min,
+                end=calendar_max,
+                interval="1mo",
+                eager=True)})
+
+    empty_user_months = (
+        _when_users_joined
+        .join(_all_months, how="cross")
+        .filter(pl.col("calendarDate") >= pl.col("userFirstCalendarMonth"))
+        .with_columns(
+            yearsSinceJoining = pl.col("calendarDate").dt.year() - pl.col("userFirstCalendarMonth").dt.year(),
+            monthsSinceJoining = pl.col("calendarDate").dt.month() - pl.col("userFirstCalendarMonth").dt.month(),
         )
         .with_columns(
-            [
+            userMonth = pl.col("yearsSinceJoining") * 12 + pl.col("monthsSinceJoining"),
+            calendarMonth = pl.col("calendarDate").dt.strftime("%Y-%m"),
+        )
+        .drop("userFirstCalendarMonth", "yearsSinceJoining", "monthsSinceJoining")
+    )
+
+
+    user_months = (
+        user_months
+        .join(
+            empty_user_months, how="full", coalesce=True,
+            on=["participantId", "userMonth", "calendarMonth", "calendarDate"])
+        .with_columns(
                 pl.col("notesWritten").fill_null(0),
                 pl.col("notesRated").fill_null(0),
                 pl.col("notesRequested").fill_null(0),
-            ]
-        )
+                pl.col("activeMonth").fill_null(False),)
         .sort(["participantId", "calendarMonth", "userMonth"])
-    )
-
-    # Save the chronological joined table before further aggregation.
-    joined_output_path = archive_dir / "user_month_actions_chronological.parquet"
-    joined_chronological.write_parquet(joined_output_path)
-
-    user_month_actions = (
-        joined_chronological.group_by(["participantId", "userMonth", "calendarMonth"])
-        .agg(
-            [
-                pl.sum("notesWritten").alias("notesWritten"),
-                pl.sum("notesRated").alias("notesRated"),
-                pl.sum("notesRequested").alias("notesRequested"),
-            ]
-        )
-        .sort(["participantId", "calendarMonth", "userMonth"])
-    )
-
-    user_month_actions.head()
-    return (user_month_actions,)
+        .with_columns(month_role=apply_rules(month_activity_rules)))
+    return (user_months,)
 
 
 @app.cell
-def _(pl, user_month_actions):
-    activity_rules = [
-        ("single_note_writer", pl.col("notesWritten") == 1),
-        ("single_digit_writer", pl.col("notesWritten").is_between(2, 9, closed="both")),
+def _(pl):
+    total_activity_rules = [
+        ("4_digit_writer",      pl.col("notesWritten") >= 1000),
+        ("triple_digit_writer", pl.col("notesWritten") >= 100),
         ("double_digit_writer", pl.col("notesWritten") >= 10),
-        (
-            "single_note_rater",
-            (pl.col("notesWritten") == 0) & (pl.col("notesRated") == 1),
-        ),
-        (
-            "single_digit_rater",
-            (pl.col("notesWritten") == 0)
-            & pl.col("notesRated").is_between(2, 9, closed="both"),
-        ),
-        (
-            "double_digit_rater",
-            (pl.col("notesWritten") == 0) & (pl.col("notesRated") >= 10),
-        ),
-        (
-            "single_post_requestor",
-            (pl.col("notesWritten") == 0)
-            & (pl.col("notesRated") == 0)
-            & (pl.col("notesRequested") == 1),
-        ),
-        (
-            "single_digit_requestor",
-            (pl.col("notesWritten") == 0)
-            & (pl.col("notesRated") == 0)
-            & pl.col("notesRequested").is_between(2, 9, closed="both"),
-        ),
-        (
-            "double_digit_requestor",
-            (pl.col("notesWritten") == 0)
-            & (pl.col("notesRated") == 0)
-            & (pl.col("notesRequested") >= 10),
-        ),
-        (
-            "not_active",
-            (pl.col("notesWritten") == 0)
-            & (pl.col("notesRated") == 0)
-            & (pl.col("notesRequested") == 0),
-        ),
+        ("single_digit_writer", pl.col("notesWritten") >= 2),
+        ("single_note_writer",  pl.col("notesWritten") == 1),
+
+        ("4_digit_rater",       pl.col("notesRated") >= 1000),
+        ("triple_digit_rater",  pl.col("notesRated") >= 100),
+        ("double_digit_rater",  pl.col("notesRated") >= 10),
+        ("single_digit_rater",  pl.col("notesRated") >= 2),
+        ("single_note_rater",   pl.col("notesRated") == 1),
+
+        ("4_digit_requestor",      pl.col("notesRequested") >= 1000),
+        ("triple_digit_requestor", pl.col("notesRequested") >= 100),
+        ("double_digit_requestor", pl.col("notesRequested") >= 10),
+        ("single_digit_requestor", pl.col("notesRequested") >= 2),
+        ("single_post_requestor",  pl.col("notesRequested") == 1),
+
+        ("not_active", pl.lit(True)),
     ]
-    activity_columns = [name for name, _rule in activity_rules]
 
-    # Parse calendar month for month-wise panel expansion.
-    main_df_dates = user_month_actions.with_columns(
-        pl.col("calendarMonth").str.strptime(pl.Date, "%Y-%m").alias("calendarDate")
-    )
+    month_activity_rules = [
+        ("double_digit_writer", pl.col("notesWritten") >= 10),
+        ("single_digit_writer", pl.col("notesWritten") >= 2),
+        ("single_note_writer",  pl.col("notesWritten") == 1),
 
-    user_starts = main_df_dates.group_by("participantId").agg(
-        [
-            pl.col("calendarDate").min().alias("firstCalendarDate"),
-            pl.col("userMonth").min().cast(pl.Int64).alias("firstUserMonth"),
-        ]
-    )
+        ("double_digit_rater",  pl.col("notesRated") >= 10),
+        ("single_digit_rater",  pl.col("notesRated") >= 2),
+        ("single_note_rater",   pl.col("notesRated") == 1),
 
-    global_max_calendar = main_df_dates.select(pl.col("calendarDate").max()).row(0)[0]
-    global_min_calendar = user_starts.select(pl.col("firstCalendarDate").min()).row(0)[0]
+        ("double_digit_requestor", pl.col("notesRequested") >= 10),
+        ("single_digit_requestor", pl.col("notesRequested") >= 2),
+        ("single_post_requestor",  pl.col("notesRequested") == 1),
 
-    all_months = pl.DataFrame(
-        {
-            "calendarDate": pl.date_range(
-                start=global_min_calendar,
-                end=global_max_calendar,
-                interval="1mo",
-                eager=True,
-            )
-        }
-    )
+        ("not_active", pl.lit(True)),
+    ]
 
-    # Build a complete panel from each user's first observed month to the global max month.
-    panel_index = (
-        user_starts.select("participantId")
-        .join(all_months, how="cross")
-        .join(user_starts, on="participantId", how="left")
-        .filter(pl.col("calendarDate") >= pl.col("firstCalendarDate"))
-        .with_columns(
-            (
-                (pl.col("calendarDate").dt.year() - pl.col("firstCalendarDate").dt.year()) * 12
-                + (pl.col("calendarDate").dt.month() - pl.col("firstCalendarDate").dt.month())
-            ).alias("monthOffset")
-        )
-        .with_columns(
-            [
-                (pl.col("firstUserMonth") + pl.col("monthOffset")).cast(pl.Int64).alias("userMonth"),
-                pl.col("calendarDate").dt.strftime("%Y-%m").alias("calendarMonth"),
-            ]
-        )
-        .select(["participantId", "userMonth", "calendarMonth"])
-    )
+    # Build the classification expression from rules
+    def apply_rules(rules):
+        # Apply rules in reverse order to ensure first match takes precedence
+        expr = pl.lit(None, dtype=pl.String)
+        for label, condition in reversed(rules):
+            expr = pl.when(condition).then(pl.lit(label)).otherwise(expr)
+    
+        # Extract ordered labels from rules
+        activity_levels = [label for label, _ in total_activity_rules]
+    
+        # Make the column an ordered categorical with the specified levels
+        expr = expr.cast(pl.Enum(activity_levels))
+    
+        return expr
 
-    classified_panel_df = (
-        panel_index.join(
-            user_month_actions.select(
-                [
-                    "participantId",
-                    "calendarMonth",
-                    "notesWritten",
-                    "notesRated",
-                    "notesRequested",
-                ]
-            ),
-            on=["participantId", "calendarMonth"],
-            how="left",
-        )
-        .with_columns(
-            [
-                pl.col("notesWritten").fill_null(0).cast(pl.Int64),
-                pl.col("notesRated").fill_null(0).cast(pl.Int64),
-                pl.col("notesRequested").fill_null(0).cast(pl.Int64),
-            ]
-        )
-        .with_columns(
-            [rule.cast(pl.Int8).alias(name) for name, rule in activity_rules]
-        )
-        .with_columns(
-            pl.coalesce(
-                [
-                    pl.when(pl.col(name) == 1).then(pl.lit(name))
-                    for name in activity_columns
-                ]
-            )
-            .fill_null("not_active")
-            .alias("activity_class")
-        )
-        .sort(["participantId", "calendarMonth", "userMonth"])
-    )
-
-    classified_panel_df.head()
-    return activity_columns, classified_panel_df
+    return apply_rules, month_activity_rules, total_activity_rules
 
 
 @app.cell
-def _(activity_columns, classified_panel_df, pl):
-    violations = (
-        classified_panel_df.with_columns(
-            pl.sum_horizontal([pl.col(c) for c in activity_columns]).alias(
-                "num_active_classes"
-            )
+def _(
+    apply_rules,
+    month_activity_rules,
+    pl,
+    total_activity_rules,
+    user_months,
+):
+    users = (
+        user_months
+        .group_by("participantId")
+        .agg(
+            notesWritten = pl.col("notesWritten").sum(),
+            notesRated = pl.col("notesRated").sum(),
+            notesRequested = pl.col("notesRequested").sum(),
+            userFirstCalendarMonth = pl.col("calendarMonth").min(),
+            userLastActiveCalendarMonth = pl.col("userLastActiveCalendarMonth").max(),
+            nActiveMonths = pl.col("activeMonth").sum(),
+            age = pl.col("userMonth").max(),
+            activeWindow = pl.col("userMonth").filter(pl.col("activeMonth")).max() - pl.col("userMonth").min() + 1,
+            firstMonthRole = pl.col("month_role").filter(pl.col("activeMonth")).first(),
+            lastMonthRole = pl.col("month_role").filter(pl.col("activeMonth")).last(),
+            *[(pl.col("month_role") == role).sum().alias(f"nMonths{role}") for role, _ in month_activity_rules[:-1]],
         )
-        .filter(pl.col("num_active_classes") != 1)
+        .with_columns(
+            total_role=apply_rules(total_activity_rules),
+            *[(pl.col(f"nMonths{role}") / pl.col("activeWindow")).alias(f"pctActiveMonths{role}") for role, _ in month_activity_rules[:-1]]
+        )
     )
+    return (users,)
 
-    rows_breaking_exclusivity = violations.height
-    users_breaking_exclusivity = violations.select(pl.col("participantId").n_unique()).item()
 
-    print(f"Rows breaking exclusivity: {rows_breaking_exclusivity}")
-    print(f"Users with at least one violating month: {users_breaking_exclusivity}")
+@app.cell
+def _():
+    role_colors = {
+        # Writers — red
+        "single_note_writer": "rgba(252,146,114,0.85)",
+        "single_digit_writer": "rgba(222,45,38,0.85)",
+        "double_digit_writer": "rgba(165,15,21,0.85)",
+        # Raters — blue
+        "single_note_rater": "rgba(158,202,225,0.85)",
+        "single_digit_rater": "rgba(49,130,189,0.85)",
+        "double_digit_rater": "rgba(8,48,107,0.85)",
+        # Requestors — green
+        "single_post_requestor": "rgba(161,217,155,0.85)",
+        "single_digit_requestor": "rgba(49,163,84,0.85)",
+        "double_digit_requestor": "rgba(0,68,27,0.85)",
+        # Inactive — gray
+        "not_active": "rgba(150,150,150,0.85)",
+    }
+    return (role_colors,)
+
+
+@app.cell
+def _(pl, users):
+    users.group_by("firstMonthRole", "userFirstCalendarMonth").agg(median_lifetime=pl.col("activeWindow").median()).sort("userFirstCalendarMonth", "firstMonthRole")
     return
 
 
 @app.cell
-def _(classified_panel_df, np, pl, plt):
-    states = [
-        "double_digit_writer",
-        "single_digit_writer",
-        "single_note_writer",
-        "double_digit_rater",
-        "single_digit_rater",
-        "single_note_rater",
-        "double_digit_requestor",
-        "single_digit_requestor",
-        "single_post_requestor",
-        "not_active",
-    ]
+def _(pl, users):
+    cohort_df = (
+        users.group_by("firstMonthRole", "userFirstCalendarMonth")
+        .agg(
+            n=pl.len(),
+            median_lifetime=pl.col("activeWindow").median(),
+            median_active_months=pl.col("nActiveMonths").median(),
+            median_notes_written=pl.col("notesWritten").median(),
+            median_notes_rated=pl.col("notesRated").median(),
+            median_notes_requested=pl.col("notesRequested").median(),
+        )
+        .sort("userFirstCalendarMonth", "firstMonthRole")
+    )
 
+    roles = cohort_df["firstMonthRole"].unique().sort().to_list()
+    return (cohort_df,)
+
+
+@app.cell
+def _(cohort_df, mo, px):
+
+    _fig = px.line(
+        cohort_df,
+        x="userFirstCalendarMonth",
+        y="median_lifetime",
+        color="firstMonthRole",
+        markers=True,
+        title="Median Lifetime by Cohort Month and Role",
+        labels={
+            "userFirstCalendarMonth": "First Calendar Month",
+            "median_lifetime": "Median Lifetime",
+        },
+        height=550 ,
+    )
+
+    _fig.update_yaxes(matches=None)
+    _fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+
+
+    mo.ui.plotly(_fig)
+    return
+
+
+@app.cell
+def _(cohort_df, mo, px, role_colors):
+    _fig = px.line(
+        cohort_df,
+        x="userFirstCalendarMonth",
+        y="median_active_months",
+        color="firstMonthRole",
+        markers=True,
+        color_discrete_map=role_colors,
+        title="Median Number of Active Months by Cohort Month and Role",
+        labels={
+            "userFirstCalendarMonth": "First Calendar Month",
+            "median_active_months": "Median N Active Months",
+        },
+        height=550 ,
+    )
+
+    _fig.update_yaxes(matches=None)
+    _fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+
+
+    mo.ui.plotly(_fig)
+    return
+
+
+@app.cell
+def _(cohort_df, mo, px, role_colors):
+    _fig = px.line(
+        cohort_df,
+        x="userFirstCalendarMonth",
+        y="n",
+        color="firstMonthRole",
+        markers=True,
+        color_discrete_map=role_colors,
+        title="Number of Users Joining in a Month by First Role",
+        labels={
+            "userFirstCalendarMonth": "First Calendar Month",
+            "n": "Num Users",
+        },
+        height=550,
+        log_y=True,
+    )
+
+    _fig.update_yaxes(matches=None)
+    _fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+
+
+    mo.ui.plotly(_fig)
+    return
+
+
+@app.cell
+def _(colorsys, mo, pl, px, user_months):
+    def plot_notes_by_join_month(user_months, metric: str, pct: bool = False):
+        label_map = {
+            "notesWritten": "Notes Written",
+            "notesRated": "Notes Rated",
+            "notesRequested": "Notes Requested",
+        }
+        label = label_map[metric]
+
+        join_month_df = (
+            user_months
+            .with_columns(
+                (pl.col("calendarDate") - pl.duration(days=pl.col("userMonth") * 30))
+                .dt.strftime("%Y-%m")
+                .alias("joinMonth")
+            )
+            .group_by(["calendarMonth", "calendarDate", "joinMonth"])
+            .agg(pl.col(metric).sum())
+            .with_columns(
+                (pl.col(metric) / pl.col(metric).sum().over("calendarMonth") * 100)
+                .alias("pctMetric")
+            )
+            .sort(["calendarDate", "joinMonth"])
+            .filter(pl.col("calendarMonth") >= "2023-01")
+        )
+
+        y_col = "pctMetric" if pct else metric
+        y_label = f"% of {label}" if pct else label
+        title = f"{'% of' if pct else 'Raw'} {label} by User Join Month"
+
+        join_months = sorted(join_month_df["joinMonth"].unique().to_list())
+        join_years  = sorted(set(m[:4] for m in join_months))
+        year_hues   = {year: i / len(join_years) for i, year in enumerate(join_years)}
+
+        color_map = {}
+        for year in join_years:
+            months_in_year = sorted(m for m in join_months if m.startswith(year))
+            n = len(months_in_year)
+            hue = year_hues[year]
+            for i, month in enumerate(months_in_year):
+                lightness = 0.25 + 0.45 * (i / max(n - 1, 1))
+                r, g, b = colorsys.hls_to_rgb(hue, lightness, 0.75)
+                color_map[month] = f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
+
+        fig = px.area(
+            join_month_df,
+            x="calendarMonth",
+            y=y_col,
+            color="joinMonth",
+            color_discrete_map=color_map,
+            title=title,
+            labels={"calendarMonth": "Calendar Month", y_col: y_label, "joinMonth": "Join Month"},
+            height=500,
+            width=600,
+        )
+        fig.update_traces(line=dict(width=0.4))
+
+        boundary_years = join_years[:-1]
+        for year in boundary_years:
+            months_up_to = [m for m in join_months if m[:4] <= year]
+            boundary_df = (
+                join_month_df
+                .filter(pl.col("joinMonth").is_in(months_up_to))
+                .group_by(["calendarMonth", "calendarDate"])
+                .agg(pl.col(y_col).sum().alias("cumVal"))
+                .sort("calendarDate")
+            )
+            fig.add_scatter(
+                x=boundary_df["calendarMonth"].to_list(),
+                y=boundary_df["cumVal"].to_list(),
+                mode="lines",
+                line=dict(color="black", width=2),
+                showlegend=False,
+            )
+
+        if pct:
+            fig.update_yaxes(range=[0, 100])
+
+        return mo.ui.plotly(fig)
+
+
+    mo.vstack([
+        plot_notes_by_join_month(user_months, "notesWritten", pct=False),
+        plot_notes_by_join_month(user_months, "notesRated",   pct=False),
+        plot_notes_by_join_month(user_months, "notesRequested", pct=False),
+    ])
+    return
+
+
+@app.cell
+def _(colorsys, mo, pl, px, user_months):
+    def plot_active_users_by_join_month(user_months, pct: bool = False, user_type: str = "total"):
+        type_map = {
+            "total":     (pl.col("activeMonth"),          "Active Users"),
+            "writers":   (pl.col("notesWritten") > 0,     "Active Writers"),
+            "raters":    (pl.col("notesRated") > 0,       "Active Raters"),
+            "requesters":(pl.col("notesRequested") > 0,   "Active Requesters"),
+        }
+        filter_expr, type_label = type_map[user_type]
+
+        join_month_df = (
+            user_months
+            .with_columns(
+                (pl.col("calendarDate") - pl.duration(days=pl.col("userMonth") * 30))
+                .dt.strftime("%Y-%m")
+                .alias("joinMonth")
+            )
+            .filter(filter_expr)
+            .group_by(["calendarMonth", "calendarDate", "joinMonth"])
+            .agg(pl.len().alias("activeUsers"))
+            .with_columns(
+                (pl.col("activeUsers") / pl.col("activeUsers").sum().over("calendarMonth") * 100)
+                .alias("pctMetric")
+            )
+            .sort(["calendarDate", "joinMonth"])
+            .filter(pl.col("calendarMonth") >= "2023-01")
+        )
+
+        y_col = "pctMetric" if pct else "activeUsers"
+        y_label = f"% of {type_label}" if pct else type_label
+        title = f"{'% of' if pct else ''} {type_label} by Join Month".strip()
+
+        join_months = sorted(join_month_df["joinMonth"].unique().to_list())
+        join_years  = sorted(set(m[:4] for m in join_months))
+        year_hues   = {year: i / len(join_years) for i, year in enumerate(join_years)}
+
+        color_map = {}
+        for year in join_years:
+            months_in_year = sorted(m for m in join_months if m.startswith(year))
+            n = len(months_in_year)
+            hue = year_hues[year]
+            for i, month in enumerate(months_in_year):
+                lightness = 0.25 + 0.45 * (i / max(n - 1, 1))
+                r, g, b = colorsys.hls_to_rgb(hue, lightness, 0.75)
+                color_map[month] = f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
+
+        fig = px.area(
+            join_month_df,
+            x="calendarMonth",
+            y=y_col,
+            color="joinMonth",
+            color_discrete_map=color_map,
+            title=title,
+            labels={"calendarMonth": "Calendar Month", y_col: y_label, "joinMonth": "Join Month"},
+            height=500,
+            width=600,
+        )
+        fig.update_traces(line=dict(width=0.4))
+
+        boundary_years = join_years[:-1]
+        for year in boundary_years:
+            months_up_to = [m for m in join_months if m[:4] <= year]
+            boundary_df = (
+                join_month_df
+                .filter(pl.col("joinMonth").is_in(months_up_to))
+                .group_by(["calendarMonth", "calendarDate"])
+                .agg(pl.col(y_col).sum().alias("cumVal"))
+                .sort("calendarDate")
+            )
+            fig.add_scatter(
+                x=boundary_df["calendarMonth"].to_list(),
+                y=boundary_df["cumVal"].to_list(),
+                mode="lines",
+                line=dict(color="black", width=2),
+                showlegend=False,
+            )
+
+        if pct:
+            fig.update_yaxes(range=[0, 100])
+
+        return mo.ui.plotly(fig)
+
+
+    mo.vstack([
+        plot_active_users_by_join_month(user_months, user_type="total"),
+        plot_active_users_by_join_month(user_months, user_type="writers"),
+        plot_active_users_by_join_month(user_months, user_type="raters"),
+        plot_active_users_by_join_month(user_months, user_type="requesters"),
+    ])
+    return
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _(month_activity_rules, pl, users):
+    users.group_by("total_role").agg(
+        n = pl.len(),
+        median_notes_written = pl.col("notesWritten").median(),
+        median_notes_rated = pl.col("notesRated").median(),
+        median_notes_requested = pl.col("notesRequested").median(),
+        pct_having_rated = (pl.col("notesRated") > 0).mean(),
+        pct_having_requested = (pl.col("notesRequested") > 0).mean(),
+        medianActiveWindow = pl.col("activeWindow").median(),
+        *[(pl.col(f"nMonths{role}")).mean().alias(f"avg_nMonths{role}") for role, _ in month_activity_rules[:-1]],
+        *[(pl.col(f"pctActiveMonths{role}")).mean().alias(f"avg_pctActiveMonths{role}") for role, _ in month_activity_rules[:-1]]
+    ).sort("total_role")
+    return
+
+
+app._unparsable_cell(
+    r"""
     # Build month-to-next-month transitions within each user trajectory
     transitions = (
-        classified_panel_df.sort(["participantId", "userMonth"])
+        user_months
         .with_columns(
             [
-                pl.col("activity_class")
+                prev_role=pl.col("month_role")
                 .shift(-1)
                 .over("participantId")
                 .alias("next_state"),
@@ -398,7 +670,9 @@ def _(classified_panel_df, np, pl, plt):
     plt.show()
 
     transition_matrix_ordered
-    return (states,)
+    """,
+    name="_"
+)
 
 
 @app.cell
@@ -459,23 +733,8 @@ def _(classified_panel_df, pl):
         )
     )
 
-    state_colors = {
-        # Writers — red
-        "single_note_writer": "rgba(252,146,114,0.85)",
-        "single_digit_writer": "rgba(222,45,38,0.85)",
-        "double_digit_writer": "rgba(165,15,21,0.85)",
-        # Raters — blue
-        "single_note_rater": "rgba(158,202,225,0.85)",
-        "single_digit_rater": "rgba(49,130,189,0.85)",
-        "double_digit_rater": "rgba(8,48,107,0.85)",
-        # Requestors — green
-        "single_post_requestor": "rgba(161,217,155,0.85)",
-        "single_digit_requestor": "rgba(49,163,84,0.85)",
-        "double_digit_requestor": "rgba(0,68,27,0.85)",
-        # Inactive — gray
-        "not_active": "rgba(150,150,150,0.85)",
-    }
-    return state_colors, transitions_by_month
+
+    return (transitions_by_month,)
 
 
 @app.cell
