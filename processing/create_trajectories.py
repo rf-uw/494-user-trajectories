@@ -20,6 +20,30 @@ _never_crh = ~pl.col("noteEverCrh")
 _top_5_topics = ["sports", "diaries_&_daily_life", "business_&_entrepreneurs", "science_&_technology", "news_&_social_concern"]
 
 
+def _cast_ids(df: pl.DataFrame) -> pl.DataFrame:
+    id_columns = [
+        column
+        for column in df.columns
+        if (
+            column.lower() == "post_id"
+            or column.lower() == "tweet_author_id"
+            or column.lower() == "noteid"
+            or column.lower() == "note_id"
+            or column.lower() == "tweetid"
+            or column.lower() == "tweet_id"
+            or column.lower().endswith("authorid")
+            or column.lower().endswith("author_id")
+            or column.lower().endswith("userid")
+            or column.lower().endswith("user_id")
+            or column.lower().endswith("participantid")
+            or column.lower().endswith("participant_id")
+        )
+    ]
+    if not id_columns:
+        return df
+    return df.with_columns([pl.col(column).cast(pl.String) for column in id_columns])
+
+
 
 # Calculate calendar-based user month (months since first action) and calendar month
 def _enrich_with_user_and_calendar_month(df: pl.DataFrame) -> pl.DataFrame:
@@ -38,7 +62,7 @@ def _enrich_with_user_and_calendar_month(df: pl.DataFrame) -> pl.DataFrame:
 def _enrich_with_scores(
     notes: pl.DataFrame, ratings: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    scores      = pl.read_parquet("data/2026-02-03-scored_notes.parquet")
+    scores = _cast_ids(pl.read_parquet("data/2026-02-03-scored_notes.parquet"))
     I_AND_F_COLUMNS = {
         "CoreModel (v1.1)": ("coreNoteIntercept", "coreNoteFactor1"),
         "ExpansionModel (v1.1)": ("expansionNoteIntercept", "expansionNoteFactor1"),
@@ -104,7 +128,7 @@ def _enrich_with_scores(
 def _enrich_with_crh(
     notes: pl.DataFrame, ratings: pl.DataFrame, requests: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    statuses    = pl.read_csv    ("data/2026-02-27-note_status_records.csv")    # Processed statuses, taken from a scm-prep run on 2/27.
+    statuses = _cast_ids(pl.read_csv("data/2026-02-27-note_status_records.csv"))  # Processed statuses, taken from a scm-prep run on 2/27.
     # Calculate whether a note ever achieved CRH status
     note_ever_crh = (
         statuses
@@ -135,7 +159,7 @@ def _enrich_with_topics(
     notes: pl.DataFrame, ratings: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     # Join anything outside to top 5 topics into "other"
-    topics      = pl.read_parquet("data/from-soham-notes_full.parquet")
+    topics = _cast_ids(pl.read_parquet("data/from-soham-notes_full.parquet"))
     topics = topics.with_columns(condensed_topic=pl.when(pl.col("topic").is_in(_top_5_topics)).then(pl.col("topic")).otherwise(pl.lit("other")))
     topics = topics.select("noteId", "topic", "condensed_topic")
 
@@ -174,7 +198,7 @@ def _enrich_with_first_action(
 def _enrich_with_post_lang_and_author(
     notes: pl.DataFrame,
 ) -> pl.DataFrame:
-    _our_post_data = (
+    _our_post_data = _cast_ids(
         pl.scan_parquet("/data/cn_archive/derivatives/20260227_raw_posts.parquet")
         .select("post_id", "author_id", "lang")
         .filter(pl.col("author_id").is_not_null() | pl.col("lang").is_not_null())
@@ -185,9 +209,10 @@ def _enrich_with_post_lang_and_author(
             tweet_author_id = pl.col("author_id").filter(pl.col("author_id").is_not_null()).first(),
             tweet_lang = pl.col("lang").filter(pl.col("lang").is_not_null()).first(),
             n_non_null_author_id = pl.col("author_id").filter(pl.col("author_id").is_not_null()).n_unique(),
-            n_non_null_lang = pl.col("lang").filter(pl.col("lang").is_not_null()).n_unique()))
+            n_non_null_lang = pl.col("lang").filter(pl.col("lang").is_not_null()).n_unique())
+    )
 
-    _renault_post_data = (
+    _renault_post_data = _cast_ids(
         pl.read_csv(
             "data/renault_partisanship_labels.csv", 
             schema_overrides={"tweet_author_id": pl.String, "tweet_id": pl.String})
@@ -222,7 +247,7 @@ def _enrich_with_post_lang_and_author(
     # Coalesce 
     _post_data = (
         _post_data.with_columns(
-            post_id = pl.coalesce(["post_id", "tweet_id"]).cast(pl.Int64),
+            post_id = pl.coalesce(["post_id", "tweet_id"]),
             tweet_author_id = pl.coalesce(["tweet_author_id", "tweet_author_id_renault"]),
             tweet_lang = pl.coalesce(["tweet_lang", "tweet_lang_renault"]))
         .rename({"post_id": "tweetId"})
@@ -239,9 +264,10 @@ def _enrich_with_post_lang_and_author(
 def _enrich_with_renault_author_party(
     notes: pl.DataFrame,
 ) -> pl.DataFrame:
-    _renault = pl.read_csv(
-        "data/renault_partisanship_labels.csv", 
-        schema_overrides={"note_id": pl.String, "tweet_author_id": pl.String, "tweet_id": pl.String})
+    _renault = _cast_ids(
+        pl.read_csv(
+            "data/renault_partisanship_labels.csv", 
+            schema_overrides={"note_id": pl.String, "tweet_author_id": pl.String, "tweet_id": pl.String}))
 
     _renault_authors = _renault.select(["tweet_author_id", "party"]).unique().rename({"party": "author_party"})
     _renault_posts = _renault.select(["tweet_id", "party"]).unique().rename({"party": "post_party"})
@@ -314,10 +340,10 @@ def _enrich_requests_with_outcomes(
 
 if __name__ == "__main__":
     # Load data
-    users       = pl.read_parquet("data/2026-02-03/userEnrollment.parquet")
-    notes       = pl.read_parquet("data/2026-02-03/notes.parquet")
-    ratings     = pl.read_parquet("data/2026-02-03/noteRatings.parquet")
-    requests    = pl.read_parquet("data/2026-01-09/noteRequests.parquet").rename({"userId": "requesterParticipantId"}) # Using the user-level requests, not post-level requests!
+    users = pl.read_parquet("data/2026-02-03/userEnrollment.parquet")
+    notes = _cast_ids(pl.read_parquet("data/2026-02-03/notes.parquet"))
+    ratings = _cast_ids(pl.read_parquet("data/2026-02-03/noteRatings.parquet"))
+    requests = _cast_ids(pl.read_parquet("data/2026-01-09/noteRequests.parquet")).rename({"userId": "requesterParticipantId"}) # Using the user-level requests, not post-level requests!
     logger.info("Data loaded successfully")
     
     ratings  = ratings .with_columns(ratingDate= pl.from_epoch(pl.col("createdAtMillis"), time_unit="ms").dt.date())
