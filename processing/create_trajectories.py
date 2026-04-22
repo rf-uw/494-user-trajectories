@@ -373,7 +373,7 @@ if __name__ == "__main__":
         antiDemNotes    =(_posted_by_dem & _note_claims_misinfo).sum(),
         proDemNotes     =(_posted_by_dem & _note_claims_not_misinfo).sum(),
         antiRepNotes    =(_posted_by_rep & _note_claims_misinfo).sum(),
-        proRepNNotes     =(_posted_by_rep & _note_claims_not_misinfo).sum(),
+        proRepNotes     =(_posted_by_rep & _note_claims_not_misinfo).sum(),
 
         *[
             pl.col("condensed_topic")
@@ -382,6 +382,12 @@ if __name__ == "__main__":
             .alias(f"{topic}Count")
             for topic in _top_5_topics + ["other"]
         ]
+    ).with_columns(
+        notesOnDems=pl.col("antiDemNotes") + pl.col("proDemNotes"),
+        notesOnReps=pl.col("antiRepNotes") + pl.col("proRepNotes"),
+        demAlignedNotes=pl.col("proDemNotes") + pl.col("antiRepNotes"),
+        repAlignedNotes=pl.col("proRepNotes") + pl.col("antiDemNotes"),
+        demAlignedLessRepAligned=pl.col("demAlignedNotes") - pl.col("repAlignedNotes"),
     ).sort("noteAuthorParticipantId", "userMonth")
     logger.info(f"Aggregated user notes: {len(user_notes):,} rows")
 
@@ -417,14 +423,22 @@ if __name__ == "__main__":
         uniqueTopicsRated=pl.col("topic").filter(pl.col("topic").is_not_null()).n_unique(),
 
         # Classifications from "Hyperactive Minority Alter the Stability of Community Notes" by Nudo et al.
-        antiDemNNRatings    =(_posted_by_dem & _note_claims_misinfo     & _rated_helpful).sum(),
-        proDemNNRatings     =(_posted_by_dem & _note_claims_misinfo     & _rated_not_helpful).sum(),
-        proDemNNNRatings    =(_posted_by_dem & _note_claims_not_misinfo & _rated_helpful).sum(),
-        antiDemNNNRatings   =(_posted_by_dem & _note_claims_not_misinfo & _rated_not_helpful).sum(),
-        antiRepNNRatings    =(_posted_by_rep & _note_claims_misinfo     & _rated_helpful).sum(),
-        proRepNNRatings     =(_posted_by_rep & _note_claims_misinfo     & _rated_not_helpful).sum(),
-        proRepNNNRatings    =(_posted_by_rep & _note_claims_not_misinfo & _rated_helpful).sum(),
-        antiRepNNNRatings   =(_posted_by_rep & _note_claims_not_misinfo & _rated_not_helpful).sum(),
+        antiDemRatings    = (
+              (_posted_by_dem & _note_claims_misinfo     & _rated_helpful)
+            | (_posted_by_dem & _note_claims_not_misinfo & _rated_not_helpful)
+        ).sum(),
+        antiRepRatings    = (
+                (_posted_by_rep & _note_claims_misinfo     & _rated_helpful)
+            | (_posted_by_rep & _note_claims_not_misinfo & _rated_not_helpful)
+        ).sum(),
+        proDemRatings     = (
+                (_posted_by_dem & _note_claims_misinfo     & _rated_not_helpful)
+            | (_posted_by_dem & _note_claims_not_misinfo & _rated_helpful)
+        ).sum(),
+        proRepRatings     = (
+                (_posted_by_rep & _note_claims_misinfo     & _rated_not_helpful)
+            | (_posted_by_rep & _note_claims_not_misinfo & _rated_helpful)
+        ).sum(),
         *[
             pl.col("condensed_topic")
             .filter(pl.col("condensed_topic") == topic)
@@ -436,10 +450,11 @@ if __name__ == "__main__":
         overallAccuracy=(pl.col("correctHelpfuls") + pl.col("correctNotHelpfuls")) / pl.col("notesRated"),
         helpfulNotHelpfulFactorDiff=pl.col("avgHelpfulFactor") - pl.col("avgNotHelpfulFactor"),
         helpfulNotHelpfulInterceptDiff=pl.col("avgHelpfulIntercept") - pl.col("avgNotHelpfulIntercept"),
-        proDemRatings=pl.col("proDemNNRatings") + pl.col("proDemNNNRatings"),
-        antiDemRatings=pl.col("antiDemNNRatings") + pl.col("antiDemNNNRatings"),
-        proRepRatings=pl.col("proRepNNRatings") + pl.col("proRepNNNRatings"),
-        antiRepRatings=pl.col("antiRepNNRatings") + pl.col("antiRepNNNRatings"),
+        ratingsOnDems=pl.col("antiDemRatings") + pl.col("proDemRatings"),
+        ratingsOnReps=pl.col("antiRepRatings") + pl.col("proRepRatings"),
+        demAlignedRatings=pl.col("proDemRatings") + pl.col("antiRepRatings"),
+        repAlignedRatings=pl.col("proRepRatings") + pl.col("antiDemRatings"),
+        demAlignedLessRepAligned=pl.col("demAlignedRatings") - pl.col("repAlignedRatings"),
     ).sort("raterParticipantId", "userMonth")
     logger.info(f"Aggregated user ratings: {len(user_ratings):,} rows")
 
