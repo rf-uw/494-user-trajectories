@@ -74,7 +74,7 @@ if __name__ == "__main__":
         hits=pl.col("noteEverCrh").sum(),
         avgNoteFactor=pl.col("noteFinalFactor").mean(),
         avgNoteIntercept=pl.col("noteFinalIntercept").mean(),
-        topicsTargeted=pl.col("topic").filter(pl.col("topic").is_not_null()).n_unique(),
+        uniqueTopicsTargeted=pl.col("topic").filter(pl.col("topic").is_not_null()).n_unique(),
         avgRatingsEarned=pl.col("numRatings").mean(),
 
         antiDemNotes    =(_posted_by_dem & _note_claims_misinfo).sum(),
@@ -86,8 +86,8 @@ if __name__ == "__main__":
             pl.col("condensed_topic")
             .filter(pl.col("condensed_topic") == topic)
             .count()
-            .alias(f"{topic}Count")
-            for topic in _top_5_topics + ["other"]
+            .alias(f"{topic}NotesWritten")
+            for topic in _top_5_topics
         ]
     ).with_columns(
         notesOnDems=pl.col("antiDemNotes") + pl.col("proDemNotes"),
@@ -152,8 +152,8 @@ if __name__ == "__main__":
             pl.col("condensed_topic")
             .filter(pl.col("condensed_topic") == topic)
             .count()
-            .alias(f"{topic}RatedCount")
-            for topic in _top_5_topics + ["other"]
+            .alias(f"{topic}NotesRated")
+            for topic in _top_5_topics
         ],
     ).with_columns(
         overallAccuracy=(pl.col("correctHelpfuls") + pl.col("correctNotHelpfuls")) / pl.col("notesRated"),
